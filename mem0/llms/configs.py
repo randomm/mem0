@@ -25,6 +25,7 @@ class LlmConfig(BaseModel):
             "deepseek",
             "xai",
             "lmstudio",
+            "jina",
         ):
             return v
         else:

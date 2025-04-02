@@ -1,0 +1,62 @@
+---
+title: Model2Vec
+description: Integrate with Model2Vec embeddings.
+---
+
+import CodeBlock from '@theme/CodeBlock';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Model2Vec
+
+You can use embeddings from [Model2Vec](https://github.com/MinishLab/model2vec). Model2Vec allows using distilled static embeddings derived from Sentence Transformer models, which can be faster, especially on CPU.
+
+## Setup
+
+Install the extra dependency:
+
+```bash
+pip install model2vec
+```
+
+## Usage
+
+Specify the provider as `model2vec` and provide the model name from Hugging Face Hub that is compatible with the `model2vec` library.
+
+<Tabs>
+<TabItem value="python" label="Python">
+<CodeBlock language="python">
+{
+    "embedder": {
+        "provider": "model2vec",
+        "config": {
+            "model": "CISCai/jina-embeddings-v3-separation-distilled" # Example Model2Vec model
+            # "embedding_dims": 256 # Optional: Specify if needed or for verification
+        }
+    },
+    # ... other configs
+}
+</CodeBlock>
+</TabItem>
+
+<TabItem value="typescript" label="TypeScript">
+<CodeBlock language="typescript">
+{
+    embedder: {
+        provider: "model2vec",
+        config: {
+            model: "CISCai/jina-embeddings-v3-separation-distilled", // Example Model2Vec model
+            // embeddingDims: 256 // Optional: Specify if needed or for verification
+        }
+    },
+    // ... other configs
+}
+</CodeBlock>
+</TabItem>
+</Tabs>
+
+## Config Parameters
+
+-   `model`: (Required) The name of the Model2Vec compatible model on Hugging Face Hub (e.g., `CISCai/jina-embeddings-v3-separation-distilled`).
+-   `embedding_dims`: (Optional) The expected dimension of the embeddings. The library attempts to infer this automatically, but you can specify it for certainty or if inference fails.
+-   `model_kwargs`: (Optional) Dictionary of keyword arguments to pass to the `StaticModel.from_pretrained()` method during model loading. Refer to the `model2vec` library for available options. 

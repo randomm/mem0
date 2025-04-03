@@ -116,6 +116,16 @@ class PGVector(VectorStoreBase):
             raise
 
         self._ensure_collection_exists()
+        
+    def create_col(self, name=None, vector_size=None, distance=None):
+        """
+        Create a new collection.
+        
+        This is a placeholder to satisfy the VectorStoreBase abstract method requirement.
+        PGVector handles collection creation in __init__ via _ensure_collection_exists.
+        """
+        logger.info("PGVector create_col called (no-op)")
+        pass
 
     def _get_vector_type_and_ops(self) -> tuple[str, str, str]:
         """

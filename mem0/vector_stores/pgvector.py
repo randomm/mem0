@@ -170,10 +170,18 @@ class PGVector(VectorStoreBase):
 
             if not table_exists:
                 logger.info(f"Creating table '{self.collection_name}' with vector type {vector_type}.")
+                # Use appropriate column type based on configuration
+                if self.quantization_precision:
+                    # For binary vectors, use bit type with explicit dimension
+                    vector_col_def = f"bit({self.embedding_model_dims})"
+                else:
+                    # For float vectors, use standard vector type
+                    vector_col_def = f"vector({self.embedding_model_dims})"
+                    
                 create_table_sql = f"""
                     CREATE TABLE {self.collection_name} (
                         id UUID PRIMARY KEY,
-                        vector {vector_type},
+                        vector {vector_col_def},
                         payload JSONB
                     );
                 """
@@ -252,10 +260,19 @@ class PGVector(VectorStoreBase):
             logger.debug(
                 f"Quantizing {len(float_vectors_np)} vectors to precision '{self.quantization_precision}'..."
             )
-            quantized = quantize_embeddings(float_vectors_np, precision=self.quantization_precision)
-            logger.debug(f"Quantized vectors dtype: {quantized.dtype}, shape: {quantized.shape}")
-            # pgvector expects the numpy array directly for BIT type
-            return quantized
+            try:
+                # Note: quantize_embeddings returns int8 values with -1/1 or 0/1 values
+                quantized = quantize_embeddings(float_vectors_np, precision=self.quantization_precision)
+                logger.debug(f"Quantized vectors dtype: {quantized.dtype}, shape: {quantized.shape}")
+                
+                # Convert int8 values to binary strings that PostgreSQL can work with
+                # By convention, 1 = True, 0 = False for bit representation
+                # Since -1/1 can be used in binary quantization, we need to handle negative values
+                binary_values = quantized > 0
+                return binary_values 
+            except Exception as e:
+                logger.error(f"Quantization failed: {e}. Falling back to original vectors.")
+                return vectors
         else:
             return vectors # Return original list for VECTOR type
 
@@ -286,8 +303,19 @@ class PGVector(VectorStoreBase):
         logger.info(f"Processing {len(vectors)} vectors for insertion into '{self.collection_name}'")
         processed_vectors = self._maybe_quantize(vectors)
         json_payloads = [json.dumps(payload) for payload in payloads]
-
-        data_to_insert = list(zip(ids, processed_vectors, json_payloads))
+        
+        # Convert vectors to the right format for insert
+        if hasattr(processed_vectors, 'dtype') and hasattr(processed_vectors, 'tolist'):
+            # This is a numpy array, convert to list
+            processed_vectors_list = processed_vectors.tolist()
+        else:
+            # Already a list or list-like
+            processed_vectors_list = processed_vectors
+            
+        # No special formatting - we'll let execute_values handle it
+        processed_data = processed_vectors_list
+                
+        data_to_insert = list(zip(ids, processed_data, json_payloads))
 
         try:
             with self.conn.cursor() as cur: # Use context manager for cursor
@@ -337,17 +365,37 @@ class PGVector(VectorStoreBase):
 
         _, _, distance_operator = self._get_vector_type_and_ops()
 
-        # pgvector handles float query vector vs BIT/VECTOR column with appropriate operator
-        sql = f"""
-            SELECT id, vector {distance_operator} %s AS distance, payload
-            FROM {self.collection_name}
-            {filter_clause}
-            ORDER BY distance ASC
-            LIMIT %s
-        """
+        # Ensure vectors is a regular Python list (not numpy array)
+        if hasattr(vectors, 'tolist'):
+            query_vector = vectors.tolist()
+        else:
+            query_vector = vectors
 
-        # Query vector is always float32, pgvector handles comparison
-        query_params = (vectors, *filter_params, limit)
+        # Different query format based on vector type
+        if self.quantization_precision:
+            # For binary vectors, format as string and create a bit array
+            # Create binary string from the vector (1 or 0 for each value)
+            bit_str = "".join('1' if val > 0 else '0' for val in query_vector)
+            # Special handling for bit type - B prefix designates a bit string literal
+            bit_literal = f"B'{bit_str}'"
+            sql = f"""
+                SELECT id, vector {distance_operator} {bit_literal} AS distance, payload
+                FROM {self.collection_name}
+                {filter_clause}
+                ORDER BY distance ASC
+                LIMIT %s
+            """
+            query_params = (*filter_params, limit)
+        else:
+            # For float vectors, use array format and cast to vector
+            sql = f"""
+                SELECT id, vector {distance_operator} %s::vector AS distance, payload
+                FROM {self.collection_name}
+                {filter_clause}
+                ORDER BY distance ASC
+                LIMIT %s
+            """
+            query_params = (query_vector, *filter_params, limit)
 
         try:
             with self.conn.cursor() as cur:

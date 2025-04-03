@@ -4,6 +4,24 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class PGVectorConfig(BaseModel):
+    """
+    Configuration for the PGVector vector store.
+
+    Attributes:
+        dbname: Name of the PostgreSQL database.
+        collection_name: Name of the table used as the collection.
+        embedding_model_dims: Dimension of the embedding vectors.
+        user: Database username.
+        password: Database password.
+        host: Database host address.
+        port: Database port number.
+        diskann: Whether to use DiskANN index (requires pgvectorscale).
+            Disabled if quantization is enabled.
+        hnsw: Whether to use HNSW index.
+        quantization: Optional dictionary to configure vector quantization.
+            Currently supports `{"precision": "binary"}` or `{"precision": "ubinary"}`.
+            Requires `sentence-transformers` library.
+    """
     dbname: str = Field("postgres", description="Default name for the database")
     collection_name: str = Field("mem0", description="Default name for the collection")
     embedding_model_dims: Optional[int] = Field(1536, description="Dimensions of the embedding model")
@@ -13,9 +31,14 @@ class PGVectorConfig(BaseModel):
     port: Optional[int] = Field(None, description="Database port. Default is 1536")
     diskann: Optional[bool] = Field(True, description="Use diskann for approximate nearest neighbors search")
     hnsw: Optional[bool] = Field(False, description="Use hnsw for faster search")
+    quantization: Optional[Dict[str, Any]] = Field(
+        None,
+        description="(Optional) Quantization configuration. E.g., {'precision': 'binary' or 'ubinary'}."
+    )
 
     @model_validator(mode="before")
     def check_auth_and_connection(cls, values):
+        """Validate that essential connection details are provided."""
         user, password = values.get("user"), values.get("password")
         host, port = values.get("host"), values.get("port")
         if not user and not password:
@@ -26,7 +49,24 @@ class PGVectorConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def validate_quantization_config(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate the structure and values of the quantization config."""
+        quantization_config = values.get("quantization")
+        if quantization_config:
+            precision = quantization_config.get("precision")
+            if not precision:
+                raise ValueError("'precision' key is required within 'quantization' config.")
+            if precision not in ["binary", "ubinary"]:
+                raise ValueError(
+                    f"Unsupported precision '{precision}'. Only 'binary' and 'ubinary' are currently supported for pgvector."
+                )
+            # Add more validation if other keys are added later (e.g., for int8 calibration)
+        return values
+
+    @model_validator(mode="before")
+    @classmethod
     def validate_extra_fields(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure no unexpected fields are passed in the config."""
         allowed_fields = set(cls.model_fields.keys())
         input_fields = set(values.keys())
         extra_fields = input_fields - allowed_fields

@@ -24,7 +24,7 @@ m = Memory.from_config(config)
 messages = [
     {"role": "user", "content": "I'm planning to watch a movie tonight. Any recommendations?"},
     {"role": "assistant", "content": "How about a thriller movies? They can be quite engaging."},
-    {"role": "user", "content": "I’m not a big fan of thriller movies but I love sci-fi movies."},
+    {"role": "user", "content": "I'm not a big fan of thriller movies but I love sci-fi movies."},
     {"role": "assistant", "content": "Got it! I'll avoid thriller recommendations and suggest sci-fi movies in the future."}
 ]
 m.add(messages, user_id="alice", metadata={"category": "movies"})
@@ -45,3 +45,35 @@ Here's the parameters available for configuring pgvector:
 | `port` | The port where the Postgres server is running | `None` |
 | `diskann` | Whether to use diskann for vector similarity search (requires pgvectorscale) | `True` |
 | `hnsw` | Whether to use hnsw for vector similarity search | `False` |
+| `quantization` | (Optional) Dictionary to enable vector quantization (currently supports binary). Example: `{"precision": "binary"}` or `{"precision": "ubinary"}`. Requires `sentence-transformers` installed. If enabled, `diskann` is automatically disabled. | `None` |
+
+### Binary Quantization
+
+You can enable binary quantization for `pgvector` to significantly reduce storage size and potentially speed up searches using Hamming distance. This feature requires the `sentence-transformers` library to be installed (`pip install sentence-transformers`).
+
+To enable it, add the `quantization` dictionary to the `config`:
+
+```python
+config = {
+    "vector_store": {
+        "provider": "pgvector",
+        "config": {
+            "user": "test",
+            "password": "123",
+            "host": "127.0.0.1",
+            "port": "5432",
+            "quantization": {
+                "precision": "binary"  # Or "ubinary"
+            }
+            # embedding_model_dims should still be the original float dimension (e.g., 1024)
+        }
+    }
+}
+```
+
+**Notes:**
+
+*   Set `precision` to either `"binary"` (produces `int8` packed vectors) or `"ubinary"` (produces `uint8` packed vectors).
+*   The `embedding_model_dims` should still reflect the original dimensions of your float embeddings (e.g., 1024), not the reduced dimensions after packing (e.g., 128).
+*   When quantization is enabled, the `diskann` option is ignored (set to `False`) as it likely doesn't support the `BIT` vector type. `hnsw` can still be enabled (`True`) and will use Hamming distance.
+*   Quantization involves a trade-off: reduced storage/potentially faster search vs. potential loss in retrieval accuracy.

@@ -46,6 +46,7 @@ Here's the parameters available for configuring pgvector:
 | `diskann` | Whether to use diskann for vector similarity search (requires pgvectorscale) | `True` |
 | `hnsw` | Whether to use hnsw for vector similarity search | `False` |
 | `quantization` | (Optional) Dictionary to enable vector quantization (currently supports binary). Example: `{"precision": "binary"}` or `{"precision": "ubinary"}`. Requires `sentence-transformers` installed. If enabled, `diskann` is automatically disabled. | `None` |
+| `matryoshka_dims` | (Optional) Target dimensions for Matryoshka embedding truncation. Must be less than `embedding_model_dims`. Used with models like Jina embeddings v3 that support dimension truncation. | `None` |
 
 ### Binary Quantization
 
@@ -77,3 +78,27 @@ config = {
 *   The `embedding_model_dims` should still reflect the original dimensions of your float embeddings (e.g., 1024), not the reduced dimensions after packing (e.g., 128).
 *   When quantization is enabled, the `diskann` option is ignored (set to `False`) as it likely doesn't support the `BIT` vector type. `hnsw` can still be enabled (`True`) and will use Hamming distance.
 *   Quantization involves a trade-off: reduced storage/potentially faster search vs. potential loss in retrieval accuracy.
+
+### Matryoshka Embeddings
+
+You can use [Matryoshka Representation Learning](../features/matryoshka) for models that support it (like Jina embeddings v3) to truncate dimensions and save space while maintaining good accuracy:
+
+```python
+config = {
+    "vector_store": {
+        "provider": "pgvector",
+        "config": {
+            "user": "test",
+            "password": "123",
+            "host": "127.0.0.1",
+            "port": "5432",
+            "embedding_model_dims": 1024,  # Original dimension
+            "matryoshka_dims": 512        # Target dimension after truncation
+        }
+    }
+}
+```
+
+This reduces storage requirements and can improve query performance with minimal impact on accuracy.
+
+**Note:** Matryoshka truncation cannot be used together with binary quantization. If both are specified, quantization will take precedence.

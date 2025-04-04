@@ -32,6 +32,8 @@ class BaseEmbedderConfig(ABC):
         memory_search_embedding_type: Optional[str] = None,
         # LM Studio specific
         lmstudio_base_url: Optional[str] = "http://localhost:1234/v1",
+        # Add new parameter for Matryoshka truncation
+        matryoshka_dims: Optional[int] = None,
     ):
         """
         Initializes a configuration class instance for the Embeddings.
@@ -62,6 +64,8 @@ class BaseEmbedderConfig(ABC):
         :type memory_search_embedding_type: Optional[str], optional
         :param lmstudio_base_url: LM Studio base URL to be use, defaults to "http://localhost:1234/v1"
         :type lmstudio_base_url: Optional[str], optional
+        :param matryoshka_dims: Target dimensions for Matryoshka embedding truncation, defaults to None
+        :type matryoshka_dims: Optional[int], optional
         """
 
         self.model = model
@@ -89,3 +93,5 @@ class BaseEmbedderConfig(ABC):
 
         # LM Studio specific
         self.lmstudio_base_url = lmstudio_base_url
+        # Initialize new parameter
+        self.matryoshka_dims = matryoshka_dims

@@ -27,14 +27,19 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryGraph:
-    def __init__(self, config):
+    def __init__(self, config, embedding_model=None):
         self.config = config
         self.graph = Neo4jGraph(
             self.config.graph_store.config.url,
             self.config.graph_store.config.username,
             self.config.graph_store.config.password,
         )
-        self.embedding_model = EmbedderFactory.create(self.config.embedder.provider, self.config.embedder.config)
+        
+        # Use the provided embedding model or create a new one if none is provided
+        if embedding_model is not None:
+            self.embedding_model = embedding_model
+        else:
+            self.embedding_model = EmbedderFactory.create(self.config.embedder.provider, self.config.embedder.config)
 
         self.llm_provider = "openai_structured"
         if self.config.llm.provider:

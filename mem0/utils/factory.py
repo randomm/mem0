@@ -1,4 +1,6 @@
+import hashlib
 import importlib
+import json
 
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.configs.llms.base import BaseLlmConfig
@@ -52,14 +54,23 @@ class EmbedderFactory:
         "lmstudio": "mem0.embeddings.lmstudio.LMStudioEmbedding",
         "model2vec": "mem0.embeddings.model2vec.Model2VecEmbedder",
     }
+    _instances = {}
 
     @classmethod
     def create(cls, provider_name, config):
+        config_str = json.dumps(config, sort_keys=True)
+        cache_key = hashlib.md5(f"{provider_name}:{config_str}".encode()).hexdigest()
+
+        if cache_key in cls._instances:
+            return cls._instances[cache_key]
+
         class_type = cls.provider_to_class.get(provider_name)
         if class_type:
-            embedder_instance = load_class(class_type)
+            embedder_class = load_class(class_type)
             base_config = BaseEmbedderConfig(**config)
-            return embedder_instance(base_config)
+            instance = embedder_class(base_config)
+            cls._instances[cache_key] = instance
+            return instance
         else:
             raise ValueError(f"Unsupported Embedder provider: {provider_name}")
 

@@ -63,6 +63,7 @@ class PGVector(VectorStoreBase):
         diskann,
         hnsw,
         quantization: Optional[Dict[str, Any]] = None,
+        matryoshka_dims: Optional[int] = None,
     ):
         """
         Initializes the PGVector database connection and ensures the collection exists.
@@ -78,6 +79,7 @@ class PGVector(VectorStoreBase):
             diskann: If True, attempts to use DiskANN index (float only, requires extension).
             hnsw: If True, attempts to use HNSW index (float or quantized).
             quantization: Optional dict, e.g., {"precision": "binary"} to enable.
+            matryoshka_dims: Optional target dimensions for matryoshka embedding truncation.
 
         Raises:
             ImportError: If required libraries (psycopg2, pgvector, sentence-transformers for quantization) are missing.
@@ -88,6 +90,20 @@ class PGVector(VectorStoreBase):
         self.embedding_model_dims = embedding_model_dims
         self.quantization_config = quantization
         self.quantization_precision = quantization.get("precision") if quantization else None
+        self.matryoshka_dims = matryoshka_dims
+
+        # Validate matryoshka_dims (should already be validated by config, but double check)
+        if self.matryoshka_dims is not None:
+            if self.matryoshka_dims >= self.embedding_model_dims:
+                raise ValueError(
+                    f"matryoshka_dims ({self.matryoshka_dims}) must be less than "
+                    f"embedding_model_dims ({self.embedding_model_dims})"
+                )
+            if self.quantization_precision:
+                logger.warning(
+                    "Both quantization and matryoshka_dims are specified. "
+                    "Quantization will take precedence."
+                )
 
         # Validate quantization config early
         if self.quantization_precision:
@@ -151,6 +167,7 @@ class PGVector(VectorStoreBase):
         Checks if the required table exists, creates it and the index if not.
 
         Ensures the table schema (VECTOR or BIT) and index match the configuration.
+        Uses matryoshka_dims for VECTOR type if specified and quantization is not.
 
         Raises:
             psycopg2.Error: If there are issues interacting with the database.
@@ -160,6 +177,19 @@ class PGVector(VectorStoreBase):
             self.conn.commit() # Commit extension creation separately
 
             vector_type, index_opclass, _ = self._get_vector_type_and_ops()
+            effective_dims = self.embedding_model_dims  # Default to full dimension
+
+            # Determine the effective dimension for table creation
+            if self.quantization_precision:
+                # Quantization uses full dimensions for BIT type
+                effective_dims = self.embedding_model_dims 
+            elif self.matryoshka_dims is not None:
+                # Use truncated dimension if matryoshka is enabled
+                effective_dims = self.matryoshka_dims
+                vector_type = f"VECTOR({effective_dims})" # Override vector type
+            else:
+                # Use full dimensions if neither is set
+                vector_type = f"VECTOR({effective_dims})"
 
             # Check if table exists
             self.cur.execute(
@@ -173,10 +203,10 @@ class PGVector(VectorStoreBase):
                 # Use appropriate column type based on configuration
                 if self.quantization_precision:
                     # For binary vectors, use bit type with explicit dimension
-                    vector_col_def = f"bit({self.embedding_model_dims})"
+                    vector_col_def = f"bit({self.embedding_model_dims})" # Always use full dims for BIT
                 else:
-                    # For float vectors, use standard vector type
-                    vector_col_def = f"vector({self.embedding_model_dims})"
+                    # For float vectors, use the determined effective dimension
+                    vector_col_def = f"vector({effective_dims})"
                     
                 create_table_sql = f"""
                     CREATE TABLE {self.collection_name} (
@@ -276,11 +306,39 @@ class PGVector(VectorStoreBase):
         else:
             return vectors # Return original list for VECTOR type
 
+    def _maybe_truncate_embedding(self, vectors: List[List[float]]) -> List[List[float]]:
+        """
+        Truncates vectors to matryoshka_dims if specified and quantization is not active.
+        
+        Args:
+            vectors: List of vectors to potentially truncate
+            
+        Returns:
+            List of vectors truncated to matryoshka_dims if specified and quantization is not active.
+        """
+        if self.matryoshka_dims is None or self.quantization_precision:
+            # No truncation if matryoshka_dims not set or quantization enabled
+            return vectors  
+            
+        logger.debug(f"Truncating {len(vectors)} vectors to {self.matryoshka_dims} dimensions.")
+        try:
+            # Simple slicing for truncation
+            return [vector[:self.matryoshka_dims] for vector in vectors]
+        except IndexError as e:
+            logger.error(f"Error during truncation, likely vector dimension mismatch: {e}")
+            # Decide how to handle this: raise error or return original?
+            # Returning original for now, but might need stricter handling.
+            return vectors
+        except Exception as e:
+            logger.error(f"Unexpected error during truncation: {e}")
+            return vectors
+
     def insert(self, vectors: List[List[float]], payloads: Optional[List[Dict]] = None, ids: Optional[List[str]] = None):
         """
         Inserts vectors and payloads into the collection.
 
-        Quantizes vectors before insertion if binary quantization is enabled.
+        Applies matryoshka truncation if configured, then quantization if configured.
+        Quantization takes precedence.
         Uses ON CONFLICT DO NOTHING to ignore duplicates based on ID.
 
         Args:
@@ -301,7 +359,11 @@ class PGVector(VectorStoreBase):
             raise ValueError("Payloads list must be provided and match the length of vectors.")
 
         logger.info(f"Processing {len(vectors)} vectors for insertion into '{self.collection_name}'")
-        processed_vectors = self._maybe_quantize(vectors)
+        
+        # Apply truncation first, then quantization (quantization uses the original vectors if enabled)
+        truncated_vectors = self._maybe_truncate_embedding(vectors)
+        processed_vectors = self._maybe_quantize(vectors if self.quantization_precision else truncated_vectors)
+        
         json_payloads = [json.dumps(payload) for payload in payloads]
         
         # Convert vectors to the right format for insert
@@ -365,18 +427,12 @@ class PGVector(VectorStoreBase):
 
         _, _, distance_operator = self._get_vector_type_and_ops()
 
-        # Ensure vectors is a regular Python list (not numpy array)
-        if hasattr(vectors, 'tolist'):
-            query_vector = vectors.tolist()
-        else:
-            query_vector = vectors
-
-        # Different query format based on vector type
+        # Handle query vector based on config
         if self.quantization_precision:
-            # For binary vectors, format as string and create a bit array
-            # Create binary string from the vector (1 or 0 for each value)
-            bit_str = "".join('1' if val > 0 else '0' for val in query_vector)
-            # Special handling for bit type - B prefix designates a bit string literal
+            # Quantization uses the original full-dimension query vector
+            query_vector_processed = self._maybe_quantize([vectors])[0]
+            # Format for BIT type query
+            bit_str = "".join('1' if val > 0 else '0' for val in query_vector_processed)
             bit_literal = f"B'{bit_str}'"
             sql = f"""
                 SELECT id, vector {distance_operator} {bit_literal} AS distance, payload
@@ -386,8 +442,9 @@ class PGVector(VectorStoreBase):
                 LIMIT %s
             """
             query_params = (*filter_params, limit)
-        else:
-            # For float vectors, use array format and cast to vector
+        elif self.matryoshka_dims is not None:
+            # Matryoshka uses truncated query vector
+            query_vector_processed = vectors[:self.matryoshka_dims]
             sql = f"""
                 SELECT id, vector {distance_operator} %s::vector AS distance, payload
                 FROM {self.collection_name}
@@ -395,7 +452,23 @@ class PGVector(VectorStoreBase):
                 ORDER BY distance ASC
                 LIMIT %s
             """
-            query_params = (query_vector, *filter_params, limit)
+            # Ensure the query vector is a list for psycopg2
+            if hasattr(query_vector_processed, 'tolist'):
+                 query_vector_processed = query_vector_processed.tolist()
+            query_params = (query_vector_processed, *filter_params, limit)
+        else:
+            # Default: use full float vector
+            query_vector_processed = vectors
+            sql = f"""
+                SELECT id, vector {distance_operator} %s::vector AS distance, payload
+                FROM {self.collection_name}
+                {filter_clause}
+                ORDER BY distance ASC
+                LIMIT %s
+            """
+            if hasattr(query_vector_processed, 'tolist'):
+                 query_vector_processed = query_vector_processed.tolist()
+            query_params = (query_vector_processed, *filter_params, limit)
 
         try:
             with self.conn.cursor() as cur:
@@ -435,7 +508,8 @@ class PGVector(VectorStoreBase):
         """
         Updates the vector and/or payload for a given ID.
 
-        Quantizes the new vector if binary quantization is enabled.
+        Applies matryoshka truncation if configured, then quantization if configured.
+        Quantization takes precedence.
 
         Args:
             vector_id: The UUID string of the vector to update.
@@ -454,7 +528,9 @@ class PGVector(VectorStoreBase):
         params = []
 
         if vector:
-            processed_vector = self._maybe_quantize([vector])[0]
+            # Apply truncation first, then quantization (if applicable)
+            truncated_vector = self._maybe_truncate_embedding([vector])[0]
+            processed_vector = self._maybe_quantize([vector] if self.quantization_precision else [truncated_vector])[0]
             updates.append("vector = %s")
             params.append(processed_vector)
         if payload:

@@ -21,6 +21,7 @@ class PGVectorConfig(BaseModel):
         quantization: Optional dictionary to configure vector quantization.
             Currently supports `{"precision": "binary"}` or `{"precision": "ubinary"}`.
             Requires `sentence-transformers` library.
+        matryoshka_dims: Optional target dimensions for Matryoshka embedding truncation.
     """
     dbname: str = Field("postgres", description="Default name for the database")
     collection_name: str = Field("mem0", description="Default name for the collection")
@@ -34,6 +35,10 @@ class PGVectorConfig(BaseModel):
     quantization: Optional[Dict[str, Any]] = Field(
         None,
         description="(Optional) Quantization configuration. E.g., {'precision': 'binary' or 'ubinary'}."
+    )
+    matryoshka_dims: Optional[int] = Field(
+        None,
+        description="(Optional) Target dimensions for Matryoshka embedding truncation. Must be less than embedding_model_dims."
     )
 
     @model_validator(mode="before")
@@ -75,3 +80,17 @@ class PGVectorConfig(BaseModel):
                 f"Extra fields not allowed: {', '.join(extra_fields)}. Please input only the following fields: {', '.join(allowed_fields)}"
             )
         return values
+
+    @model_validator(mode='after')
+    def validate_matryoshka_dims(self):
+        """Validate that matryoshka_dims is less than embedding_model_dims if provided."""
+        if (
+            self.matryoshka_dims is not None and 
+            self.embedding_model_dims is not None and 
+            self.matryoshka_dims >= self.embedding_model_dims  # Use >= for validation
+        ):
+            raise ValueError(
+                f"matryoshka_dims ({self.matryoshka_dims}) must be less than "
+                f"embedding_model_dims ({self.embedding_model_dims})"
+            )
+        return self
